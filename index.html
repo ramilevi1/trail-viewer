@@ -1212,30 +1212,64 @@
       updateGpsUiState();
 
       const statusText = document.getElementById('gpsStatusText');
-      if (statusText) statusText.textContent = 'Requesting device GPS location...';
+      if (statusText) {
+        statusText.textContent = highAccuracy
+          ? 'Acquiring high-accuracy GPS fix...'
+          : 'Acquiring standard GPS fix...';
+      }
 
       if (gpsWatchId !== null) {
         navigator.geolocation.clearWatch(gpsWatchId);
         gpsWatchId = null;
       }
 
-      gpsWatchId = navigator.geolocation.watchPosition(
-        onGpsPositionUpdate,
-        onGpsPositionError,
-        {
-          enableHighAccuracy: highAccuracy,
-          maximumAge: 3000,
-          timeout: 15000,
-        }
+      const geoOptions = {
+        enableHighAccuracy: highAccuracy,
+        maximumAge: 10000,
+        timeout: 20000,
+      };
+
+      // Warm up with a fast single position fix first (prevents reload timeouts on mobile Safari/Chrome)
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          onGpsPositionUpdate(pos);
+          // Start continuous tracking once initial fix succeeds
+          if (isGpsTracking && gpsWatchId === null) {
+            gpsWatchId = navigator.geolocation.watchPosition(
+              onGpsPositionUpdate,
+              (watchErr) => handleGpsError(watchErr, highAccuracy),
+              geoOptions
+            );
+          }
+        },
+        (err) => handleGpsError(err, highAccuracy),
+        geoOptions
       );
+    }
+
+    function handleGpsError(err, wasHighAccuracy) {
+      // Code 1 = PERMISSION_DENIED, Code 2 = POSITION_UNAVAILABLE, Code 3 = TIMEOUT
+      if (err && err.code !== 1 && wasHighAccuracy && isGpsTracking) {
+        // Automatically fall back to standard/Wi-Fi/cell-assisted GPS instead of failing
+        const statusText = document.getElementById('gpsStatusText');
+        if (statusText) {
+          statusText.textContent = 'High-accuracy GPS timed out — switching to standard location...';
+        }
+        startGpsTracking(false);
+        return;
+      }
+      onGpsPositionError(err);
     }
 
     function stopGpsTracking() {
       isGpsTracking = false;
+      isGpsFollowing = false;
+
       if (gpsWatchId !== null && 'geolocation' in navigator) {
         navigator.geolocation.clearWatch(gpsWatchId);
         gpsWatchId = null;
       }
+
       if (userLocationMarker && map) {
         map.removeLayer(userLocationMarker);
         userLocationMarker = null;
@@ -1244,61 +1278,54 @@
         map.removeLayer(userAccuracyCircle);
         userAccuracyCircle = null;
       }
+
       lastUserPosition = null;
       updateGpsUiState();
     }
 
     function updateGpsUiState() {
-      const toggleBtn = document.getElementById('gpsToggleBtn');
-      const toggleLabel = document.getElementById('gpsToggleLabel');
+      const gpsBtn = document.getElementById('gpsToggleBtn');
+      const gpsLabel = document.getElementById('gpsToggleLabel');
       const centerBtn = document.getElementById('centerGpsBtn');
       const statusBar = document.getElementById('gpsStatusBar');
 
-      if (isGpsTracking && !isSimulatingGps) {
-        toggleBtn.className =
-          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white border border-sky-400/50 text-xs font-semibold transition-all cursor-pointer shadow-md';
-        toggleLabel.textContent = 'GPS On';
-      } else {
-        toggleBtn.className =
-          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer';
-        toggleLabel.textContent = 'My GPS';
-      }
-
       if (isGpsTracking) {
-        centerBtn.classList.remove('hidden');
-        statusBar.classList.remove('hidden');
+        if (gpsBtn && !isSimulatingGps) {
+          gpsBtn.className =
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white border border-sky-400/50 text-xs font-semibold transition-all cursor-pointer shadow-md';
+        }
+        if (gpsLabel) {
+          gpsLabel.textContent = isSimulatingGps ? 'My GPS' : 'Stop GPS';
+        }
+        if (centerBtn) centerBtn.classList.remove('hidden');
+        if (statusBar) statusBar.classList.remove('hidden');
       } else {
-        centerBtn.classList.add('hidden');
-        statusBar.classList.add('hidden');
+        if (gpsBtn) {
+          gpsBtn.className =
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer';
+        }
+        if (gpsLabel) gpsLabel.textContent = 'My GPS';
+        if (centerBtn) centerBtn.classList.add('hidden');
+        if (statusBar) statusBar.classList.add('hidden');
       }
-    }
-
-    function centerOnUserGps() {
-      if (!map || !lastUserPosition) {
-        showToast('Waiting for GPS fix...', 'info');
-        return;
-      }
-      isGpsFollowing = true;
-      map.setView([lastUserPosition.lat, lastUserPosition.lon], Math.max(map.getZoom(), 15), {
-        animate: true,
-      });
     }
 
     function onGpsPositionUpdate(position) {
-      if (!map) return;
+      if (!map || !position || !position.coords) return;
+
       const lat = position.coords.latitude;
       const lon = position.coords.longitude;
       const accuracy = position.coords.accuracy || 10;
-      lastUserPosition = { lat, lon, accuracy };
+      lastUserPosition = [lat, lon];
 
       if (!userLocationMarker) {
-        const gpsIcon = L.divIcon({
+        const pulseIcon = L.divIcon({
           className: '',
           html: '<div class="user-gps-marker"><div class="user-gps-pulse"></div><div class="user-gps-dot"></div></div>',
           iconSize: [22, 22],
           iconAnchor: [11, 11],
         });
-        userLocationMarker = L.marker([lat, lon], { icon: gpsIcon, zIndexOffset: 1000 }).addTo(map);
+        userLocationMarker = L.marker([lat, lon], { icon: pulseIcon, zIndexOffset: 1000 }).addTo(map);
       } else {
         userLocationMarker.setLatLng([lat, lon]);
       }
@@ -1307,7 +1334,7 @@
         userAccuracyCircle = L.circle([lat, lon], {
           radius: accuracy,
           color: '#38bdf8',
-          fillColor: '#0ea5e9',
+          fillColor: '#38bdf8',
           fillOpacity: 0.14,
           weight: 1,
         }).addTo(map);
@@ -1317,49 +1344,72 @@
       }
 
       if (isGpsFollowing) {
-        map.setView([lat, lon], Math.max(map.getZoom(), 15), { animate: true });
+        const targetZoom = Math.max(map.getZoom(), 15);
+        map.setView([lat, lon], targetZoom, { animate: true });
       }
 
-      const modeTag = isSimulatingGps ? 'SIMULATED GPS' : `LIVE GPS (±${Math.round(accuracy)}m)`;
-      document.getElementById('gpsStatusText').textContent = `${modeTag}: ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-
-      // Calculate nearest point on loaded GPX route
+      const statusText = document.getElementById('gpsStatusText');
       const navMetrics = document.getElementById('gpsNavMetrics');
-      if (activeTrackData && activeTrackData.points && activeTrackData.points.length > 0) {
-        let minDistKm = Infinity;
-        let nearestPt = activeTrackData.points[0];
 
-        for (let i = 0; i < activeTrackData.points.length; i++) {
-          const pt = activeTrackData.points[i];
-          const d = haversineKm(lat, lon, pt.lat, pt.lon);
-          if (d < minDistKm) {
-            minDistKm = d;
-            nearestPt = pt;
-          }
-        }
-
-        const offTrailM = Math.round(minDistKm * 1000);
-        const remKm = Math.max(0, activeTrackData.totalDistKm - nearestPt.distKm);
-        const offTrailWarning = offTrailM > 50 ? ` • ⚠️ ${offTrailM}m off trail` : ` • On trail (${offTrailM}m)`;
-        navMetrics.textContent = `Progress: ${nearestPt.distKm.toFixed(2)} km | Rem: ${remKm.toFixed(2)} km${offTrailWarning}`;
-      } else {
-        navMetrics.textContent = 'Upload a .GPX file to see distance remaining';
+      if (statusText) {
+        const modeTag = isSimulatingGps ? 'TEST GPS' : 'LIVE GPS';
+        statusText.textContent = `${modeTag}: ${lat.toFixed(5)}, ${lon.toFixed(5)} (±${Math.round(accuracy)}m)`;
       }
+
+      if (navMetrics) {
+        if (activeTrackData && activeTrackData.points && activeTrackData.points.length > 0) {
+          let nearestPt = activeTrackData.points[0];
+          let minDistKm = Infinity;
+          for (let i = 0; i < activeTrackData.points.length; i++) {
+            const pt = activeTrackData.points[i];
+            const d = haversineKm(lat, lon, pt.lat, pt.lon);
+            if (d < minDistKm) {
+              minDistKm = d;
+              nearestPt = pt;
+            }
+          }
+          const offTrailM = Math.round(minDistKm * 1000);
+          const remKm = Math.max(0, activeTrackData.totalDistKm - nearestPt.distKm);
+          const offTrailLabel = offTrailM > 60 ? `⚠️ Off-trail ${offTrailM}m` : `On-trail (${offTrailM}m)`;
+          navMetrics.textContent = `Done: ${nearestPt.distKm.toFixed(2)} km • Left: ${remKm.toFixed(2)} km • ${offTrailLabel}`;
+        } else {
+          navMetrics.textContent = 'Upload a .GPX route for turn & distance tracking';
+        }
+      }
+    }
+
+    function centerOnUserGps() {
+      if (!map || !lastUserPosition) {
+        showToast('Waiting for GPS position fix...', 'info');
+        return;
+      }
+      isGpsFollowing = true;
+      map.setView(lastUserPosition, Math.max(map.getZoom(), 16), { animate: true });
     }
 
     function onGpsPositionError(err) {
       stopGpsTracking();
       const inIframe = window.self !== window.top;
-      let title = 'GPS Location Blocked or Unavailable';
-      let detail = err && err.message ? `Browser reported: "${err.message}". ` : '';
+      const code = err && err.code;
+      let title = 'GPS Location Unavailable';
+      let detail = err && err.message ? `Browser reported (code ${code || '?'}): "${err.message}". ` : '';
 
       if (inIframe) {
         title = 'Blocked by Embedded Iframe (Google Sites / Apps Script)';
         detail +=
-          'This page is running inside an embedded sandbox iframe without geolocation permission. To use real phone GPS, host this HTML file directly on a top-level HTTPS URL (such as GitHub Pages or Netlify Drop) instead of embedding in Google Sites.';
-      } else {
+          'This page is running inside an embedded sandbox iframe without geolocation permission. Host this HTML file directly on a top-level HTTPS URL (such as GitHub Pages).';
+      } else if (code === 1) {
+        title = 'Location Permission Denied by Browser';
         detail +=
-          'Check your browser address-bar Site Settings → Location → Allow, and ensure Location Services are turned ON in your phone settings.';
+          'Tap the lock/settings icon in your browser address bar → Permissions / Site Settings → Location → Allow, then tap My GPS again.';
+      } else if (code === 3) {
+        title = 'GPS Signal Timed Out';
+        detail +=
+          'Your device took too long to lock onto satellites (common indoors). Step near a window/outdoors or tap Retry Low-Accuracy GPS.';
+      } else {
+        title = 'GPS Position Temporarily Unavailable';
+        detail +=
+          'Ensure Location Services (GPS) are enabled in your phone settings and tap Retry Low-Accuracy GPS.';
       }
 
       showGpsDiagnostic(title, detail);
@@ -1369,11 +1419,9 @@
       const box = document.getElementById('gpsDiagnosticBox');
       const titleEl = document.getElementById('gpsDiagTitle');
       const detailEl = document.getElementById('gpsDiagDetail');
-      if (box && titleEl && detailEl) {
-        titleEl.textContent = title;
-        detailEl.textContent = detail;
-        box.classList.remove('hidden');
-      }
+      if (titleEl) titleEl.textContent = title;
+      if (detailEl) detailEl.textContent = detail;
+      if (box) box.classList.remove('hidden');
     }
 
     function dismissGpsDiagnostic() {
@@ -1382,24 +1430,19 @@
     }
 
     // =========================================================================
-    // STARTUP INITIALIZATION
+    // INITIALIZATION & RESPONSIVE RESIZE
     // =========================================================================
-    window.addEventListener('DOMContentLoaded', () => {
-      try {
-        if (window.lucide && typeof window.lucide.createIcons === 'function') {
-          window.lucide.createIcons();
-        }
-      } catch (e) {
-        console.warn('Lucide icons warning:', e);
-      }
-
-      initMap();
-
-      window.addEventListener('resize', () => {
-        if (map) map.invalidateSize();
-        if (activeTrackData) renderElevationChart(activeTrackData);
-      });
+    window.addEventListener('resize', () => {
+      if (map) map.invalidateSize();
+      if (activeTrackData) renderElevationChart(activeTrackData);
     });
+
+    window.onload = function () {
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
+      initMap();
+    };
   </script>
 </body>
 </html>
