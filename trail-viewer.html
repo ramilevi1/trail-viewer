@@ -1,0 +1,1405 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPX Trail Viewer & Live GPS Navigator</title>
+
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Leaflet Map CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <!-- D3.js for Interactive Elevation Profile -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    html, body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background-color: #090d16;
+      color: #f1f5f9;
+      overflow-x: hidden;
+    }
+
+    #map {
+      height: 100%;
+      width: 100%;
+      min-height: 360px;
+      z-index: 1;
+      background: #0f172a;
+    }
+
+    .leaflet-control-attribution {
+      background: rgba(15, 23, 42, 0.85) !important;
+      color: #94a3b8 !important;
+      font-size: 10px !important;
+      border-top-left-radius: 8px;
+      padding: 2px 6px !important;
+    }
+    .leaflet-control-attribution a {
+      color: #38bdf8 !important;
+    }
+    .leaflet-control-zoom a {
+      background-color: #1e293b !important;
+      color: #f8fafc !important;
+      border-color: #334155 !important;
+    }
+    .leaflet-control-zoom a:hover {
+      background-color: #334155 !important;
+    }
+
+    .km-badge {
+      background: #0f172a;
+      color: #f8fafc;
+      border: 1.5px solid #38bdf8;
+      border-radius: 9999px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.65);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    @keyframes pulseRing {
+      0% { transform: scale(0.8); opacity: 0.9; }
+      70% { transform: scale(2.4); opacity: 0; }
+      100% { transform: scale(2.4); opacity: 0; }
+    }
+
+    .user-gps-marker {
+      position: relative;
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .user-gps-pulse {
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      border-radius: 9999px;
+      background: rgba(56, 189, 248, 0.5);
+      animation: pulseRing 1.8s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+    }
+    .user-gps-dot {
+      position: relative;
+      width: 14px;
+      height: 14px;
+      border-radius: 9999px;
+      background: #0ea5e9;
+      border: 2.5px solid #ffffff;
+      box-shadow: 0 0 10px rgba(14, 165, 233, 0.95);
+      z-index: 2;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col bg-slate-950 text-slate-100 selection:bg-emerald-500/30 selection:text-emerald-200">
+
+  <!-- Hidden File Input -->
+  <input id="gpxFileInput" type="file" accept=".gpx,.xml,application/gpx+xml,text/xml" class="hidden" onchange="handleFileSelect(event)" />
+
+  <!-- Top Navigation Header -->
+  <header class="sticky top-0 z-30 border-b border-slate-800/90 bg-slate-950/90 backdrop-blur-md">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-950/50 border border-emerald-400/30">
+          <i data-lucide="compass" class="w-5 h-5 text-white"></i>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-base sm:text-lg font-bold tracking-tight text-white">GPX Trail Navigator</h1>
+            <span class="hidden sm:inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              100% Exact GPX
+            </span>
+          </div>
+          <p id="headerSubtitle" class="text-xs text-slate-400 truncate max-w-[260px] sm:max-w-md">
+            Upload any .GPX file to inspect elevation &amp; navigate live
+          </p>
+        </div>
+      </div>
+
+      <!-- Header Actions -->
+      <div class="flex items-center gap-2">
+        <button
+          id="exportGpxBtn"
+          type="button"
+          onclick="downloadCurrentGpx()"
+          disabled
+          class="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-800 disabled:opacity-40 disabled:pointer-events-none text-slate-200 border border-slate-700/80 text-xs font-semibold transition-all cursor-pointer"
+          title="Download loaded GPX file"
+        >
+          <i data-lucide="download" class="w-3.5 h-3.5 text-sky-400"></i>
+          <span>Export .GPX</span>
+        </button>
+
+        <button
+          id="clearTrackBtn"
+          type="button"
+          onclick="clearLoadedTrack()"
+          disabled
+          class="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800/90 hover:bg-rose-950/60 disabled:opacity-40 disabled:pointer-events-none text-slate-200 hover:text-rose-200 border border-slate-700/80 hover:border-rose-500/40 text-xs font-semibold transition-all cursor-pointer"
+          title="Clear loaded GPX route"
+        >
+          <i data-lucide="trash-2" class="w-3.5 h-3.5 text-rose-400"></i>
+          <span>Clear</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-4 sm:py-6 flex flex-col gap-4 sm:gap-5">
+
+    <!-- GPX Upload Dropzone Bar -->
+    <section
+      id="dropZone"
+      ondragover="handleDragOver(event)"
+      ondragleave="handleDragLeave(event)"
+      ondrop="handleFileDrop(event)"
+      class="rounded-2xl border-2 border-dashed border-slate-700/90 hover:border-emerald-500/70 bg-slate-900/70 transition-all p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between gap-4"
+    >
+      <div class="flex items-center gap-3.5 text-center sm:text-left">
+        <div class="w-11 h-11 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0 mx-auto sm:mx-0">
+          <i data-lucide="file-up" class="w-5 h-5 text-emerald-400"></i>
+        </div>
+        <div>
+          <h2 id="activeTrackTitle" class="text-sm sm:text-base font-bold text-white">No .GPX File Loaded Yet</h2>
+          <p id="activeTrackMeta" class="text-xs text-slate-400 mt-0.5">
+            Drag &amp; drop a <span class="text-slate-200 font-medium">.gpx</span> file here, or click <span class="text-emerald-400 font-medium">Choose .GPX File</span> to load 100% of your exact coordinates.
+          </p>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onclick="triggerFilePicker()"
+        class="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white font-semibold text-sm shadow-lg shadow-emerald-950/60 border border-emerald-400/30 transition-all cursor-pointer shrink-0"
+      >
+        <i data-lucide="folder-open" class="w-4 h-4"></i>
+        <span>Choose .GPX File</span>
+      </button>
+    </section>
+
+    <!-- Telemetry Metrics Grid -->
+    <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">
+      <div class="rounded-2xl bg-slate-900/80 border border-slate-800/90 p-3.5">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>Total Distance</span>
+          <i data-lucide="route" class="w-3.5 h-3.5 text-emerald-400"></i>
+        </div>
+        <div id="statDistance" class="text-lg sm:text-xl font-bold font-mono text-white">-- km</div>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900/80 border border-slate-800/90 p-3.5">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>Elevation Gain</span>
+          <i data-lucide="trending-up" class="w-3.5 h-3.5 text-amber-400"></i>
+        </div>
+        <div id="statGain" class="text-lg sm:text-xl font-bold font-mono text-emerald-400">-- m</div>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900/80 border border-slate-800/90 p-3.5">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>Elevation Loss</span>
+          <i data-lucide="trending-down" class="w-3.5 h-3.5 text-rose-400"></i>
+        </div>
+        <div id="statLoss" class="text-lg sm:text-xl font-bold font-mono text-rose-300">-- m</div>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900/80 border border-slate-800/90 p-3.5">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>Min / Max Elev</span>
+          <i data-lucide="mountain" class="w-3.5 h-3.5 text-sky-400"></i>
+        </div>
+        <div id="statMinMax" class="text-sm sm:text-base font-bold font-mono text-white mt-0.5">-- / -- m</div>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900/80 border border-slate-800/90 p-3.5">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>Trackpoints</span>
+          <i data-lucide="map-pin" class="w-3.5 h-3.5 text-violet-400"></i>
+        </div>
+        <div id="statPoints" class="text-lg sm:text-xl font-bold font-mono text-white">0</div>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900/80 border border-slate-800/90 p-3.5">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>Segments</span>
+          <i data-lucide="git-branch" class="w-3.5 h-3.5 text-teal-400"></i>
+        </div>
+        <div id="statSegments" class="text-lg sm:text-xl font-bold font-mono text-white">0</div>
+      </div>
+    </section>
+
+    <!-- Interactive Map Card -->
+    <section class="rounded-2xl bg-slate-900/85 border border-slate-800 overflow-hidden shadow-xl flex flex-col">
+      <!-- Map Toolbar -->
+      <div class="px-4 py-3 border-b border-slate-800 bg-slate-900/95 flex flex-wrap items-center justify-between gap-2.5">
+        <!-- Base Layer Switcher -->
+        <div class="inline-flex items-center rounded-xl bg-slate-950 p-1 border border-slate-800">
+          <button
+            id="layerTopoBtn"
+            type="button"
+            onclick="setBaseLayer('topo')"
+            class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white transition-all cursor-pointer"
+          >
+            Topo
+          </button>
+          <button
+            id="layerSatBtn"
+            type="button"
+            onclick="setBaseLayer('satellite')"
+            class="px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition-all cursor-pointer"
+          >
+            Satellite
+          </button>
+          <button
+            id="layerStreetBtn"
+            type="button"
+            onclick="setBaseLayer('street')"
+            class="px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition-all cursor-pointer"
+          >
+            Street
+          </button>
+          <button
+            id="layerDarkBtn"
+            type="button"
+            onclick="setBaseLayer('dark')"
+            class="px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition-all cursor-pointer"
+          >
+            Dark
+          </button>
+        </div>
+
+        <!-- GPS & Map Controls -->
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- Real Hardware GPS -->
+          <button
+            id="gpsToggleBtn"
+            type="button"
+            onclick="toggleGpsTracking()"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer"
+            title="Track your live phone GPS location"
+          >
+            <i data-lucide="locate" class="w-3.5 h-3.5 text-sky-400"></i>
+            <span id="gpsToggleLabel">My GPS</span>
+          </button>
+
+          <!-- Simulated GPS for Testing -->
+          <button
+            id="simGpsBtn"
+            type="button"
+            onclick="toggleSimulatedGps()"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer"
+            title="Simulate moving along the trail to test GPS tracking"
+          >
+            <i data-lucide="play-circle" class="w-3.5 h-3.5 text-amber-400"></i>
+            <span id="simGpsLabel">Test GPS</span>
+          </button>
+
+          <!-- Center on User GPS -->
+          <button
+            id="centerGpsBtn"
+            type="button"
+            onclick="centerOnUserGps()"
+            class="hidden inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/40 text-xs font-semibold transition-all cursor-pointer"
+          >
+            <i data-lucide="crosshair" class="w-3.5 h-3.5"></i>
+            <span>Center</span>
+          </button>
+
+          <!-- Fit Route Bounds -->
+          <button
+            id="fitBoundsBtn"
+            type="button"
+            onclick="fitRouteBounds()"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer"
+          >
+            <i data-lucide="maximize-2" class="w-3.5 h-3.5 text-emerald-400"></i>
+            <span>Fit Route</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Live GPS Telemetry Bar -->
+      <div id="gpsStatusBar" class="hidden px-4 py-2.5 bg-sky-950/60 border-b border-sky-500/30 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>
+          <span id="gpsStatusText" class="font-medium text-sky-200">Acquiring GPS signal...</span>
+        </div>
+        <div id="gpsNavMetrics" class="font-mono text-sky-300 text-[11px]"></div>
+      </div>
+
+      <!-- GPS Diagnostic Box (shown if browser/iframe blocks geolocation) -->
+      <div id="gpsDiagnosticBox" class="hidden px-4 py-3 bg-rose-950/70 border-b border-rose-500/40 text-xs text-rose-100 space-y-2">
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex items-center gap-2 font-bold text-rose-300">
+            <i data-lucide="alert-triangle" class="w-4 h-4 shrink-0"></i>
+            <span id="gpsDiagTitle">Browser Blocked Hardware GPS</span>
+          </div>
+          <button type="button" onclick="dismissGpsDiagnostic()" class="text-rose-300 hover:text-white px-1.5 py-0.5 rounded cursor-pointer">✕</button>
+        </div>
+        <p id="gpsDiagDetail" class="text-rose-200/90 leading-relaxed"></p>
+        <div class="flex flex-wrap items-center gap-2 pt-1">
+          <button
+            type="button"
+            onclick="startSimulatedGps()"
+            class="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs cursor-pointer"
+          >
+            Run Test GPS Simulation Instead
+          </button>
+          <button
+            type="button"
+            onclick="startGpsTracking(false)"
+            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 font-semibold text-xs cursor-pointer"
+          >
+            Retry Low-Accuracy GPS
+          </button>
+        </div>
+      </div>
+
+      <!-- Map Canvas Container -->
+      <div class="relative w-full h-[380px] sm:h-[460px] lg:h-[520px]">
+        <div id="map"></div>
+
+        <!-- Legend Overlay -->
+        <div class="absolute bottom-3 left-3 z-[400] bg-slate-950/85 backdrop-blur-md border border-slate-800 rounded-xl px-3 py-2 text-[11px] text-slate-300 flex flex-wrap items-center gap-3 pointer-events-none">
+          <span class="inline-flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span> Start</span>
+          <span class="inline-flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block"></span> Finish</span>
+          <span class="inline-flex items-center gap-1.5"><span class="w-3 h-1 rounded bg-emerald-400 inline-block"></span> Flat/Climb</span>
+          <span class="inline-flex items-center gap-1.5"><span class="w-3 h-1 rounded bg-rose-500 inline-block"></span> Steep</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Interactive Elevation Profile Card -->
+    <section class="rounded-2xl bg-slate-900/85 border border-slate-800 p-4 sm:p-5 shadow-xl">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <div>
+          <h3 class="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+            <i data-lucide="area-chart" class="w-4 h-4 text-emerald-400"></i>
+            <span>Interactive Elevation Profile</span>
+          </h3>
+          <p class="text-xs text-slate-400">Hover or touch along the chart to inspect exact elevation, distance, and coordinates on the map</p>
+        </div>
+        <div id="hoverReadout" class="hidden font-mono text-xs bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-emerald-300">
+          Dist: -- km | Elev: -- m
+        </div>
+      </div>
+
+      <div id="chartWrapper" class="relative w-full h-[210px] sm:h-[240px] rounded-xl bg-slate-950/70 border border-slate-800/80 overflow-hidden">
+        <!-- Empty State Overlay -->
+        <div id="chartEmptyState" class="absolute inset-0 flex flex-col items-center justify-center text-center p-4 z-10 pointer-events-none">
+          <i data-lucide="mountain-snow" class="w-8 h-8 text-slate-600 mb-2"></i>
+          <p class="text-xs sm:text-sm font-medium text-slate-400">Upload a .GPX file above to render the interactive elevation profile</p>
+        </div>
+        <svg id="elevationSvg" class="w-full h-full block"></svg>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast Notification -->
+  <div id="toastContainer" class="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 max-w-sm pointer-events-none"></div>
+
+  <script>
+    // =========================================================================
+    // GLOBAL APPLICATION STATE
+    // =========================================================================
+    let map = null;
+    let currentBaseLayer = null;
+    let baseLayers = {};
+    let routeLayerGroup = null;
+    let markerLayerGroup = null;
+    let hoverMapMarker = null;
+
+    let activeTrackData = null; // { name, fileName, rawXml, points: [...], segmentsCount, totalDistKm, gainM, lossM, minEle, maxEle }
+
+    // GPS & Simulation State
+    let isGpsTracking = false;
+    let isGpsFollowing = true;
+    let isSimulatingGps = false;
+    let gpsWatchId = null;
+    let simGpsInterval = null;
+    let simPointIndex = 0;
+    let userLocationMarker = null;
+    let userAccuracyCircle = null;
+    let lastUserPosition = null;
+
+    // =========================================================================
+    // TOAST NOTIFICATION HELPER
+    // =========================================================================
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      if (!container) return;
+
+      const colors = {
+        success: 'bg-emerald-950/95 border-emerald-500/60 text-emerald-100',
+        error: 'bg-rose-950/95 border-rose-500/60 text-rose-100',
+        warning: 'bg-amber-950/95 border-amber-500/60 text-amber-100',
+        info: 'bg-slate-900/95 border-sky-500/60 text-slate-100',
+      };
+
+      const toast = document.createElement('div');
+      toast.className = `pointer-events-auto px-4 py-3 rounded-xl border shadow-2xl text-xs font-medium backdrop-blur-md transition-all duration-300 ${colors[type] || colors.info}`;
+      toast.textContent = message;
+      container.appendChild(toast);
+
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(8px)';
+        setTimeout(() => toast.remove(), 300);
+      }, 3600);
+    }
+
+    // =========================================================================
+    // MAP INITIALIZATION
+    // =========================================================================
+    function initMap() {
+      // Center on Chon Buri / Rayong region by default
+      map = L.map('map', {
+        center: [12.9236, 100.8825],
+        zoom: 11,
+        preferCanvas: true,
+        zoomControl: true,
+      });
+
+      baseLayers = {
+        topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+          maxZoom: 17,
+          attribution: '&copy; OpenStreetMap contributors, SRTM | &copy; OpenTopoMap',
+        }),
+        satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+          maxZoom: 18,
+          attribution: 'Tiles &copy; Esri',
+        }),
+        street: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors',
+        }),
+        dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap &copy; CARTO',
+        }),
+      };
+
+      currentBaseLayer = baseLayers.topo;
+      currentBaseLayer.addTo(map);
+
+      routeLayerGroup = L.layerGroup().addTo(map);
+      markerLayerGroup = L.layerGroup().addTo(map);
+
+      // Pause auto-follow if user manually drags the map
+      map.on('dragstart', () => {
+        if (isGpsTracking) {
+          isGpsFollowing = false;
+        }
+      });
+    }
+
+    function setBaseLayer(layerKey) {
+      if (!map || !baseLayers[layerKey]) return;
+      if (currentBaseLayer) {
+        map.removeLayer(currentBaseLayer);
+      }
+      currentBaseLayer = baseLayers[layerKey];
+      currentBaseLayer.addTo(map);
+
+      const btnMap = {
+        topo: 'layerTopoBtn',
+        satellite: 'layerSatBtn',
+        street: 'layerStreetBtn',
+        dark: 'layerDarkBtn',
+      };
+
+      Object.entries(btnMap).forEach(([key, id]) => {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        if (key === layerKey) {
+          btn.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white transition-all cursor-pointer';
+        } else {
+          btn.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition-all cursor-pointer';
+        }
+      });
+    }
+
+    // =========================================================================
+    // FILE UPLOAD & GPX PARSING (100% EXACT TRACKPOINTS)
+    // =========================================================================
+    function triggerFilePicker() {
+      const input = document.getElementById('gpxFileInput');
+      if (input) {
+        input.value = '';
+        input.click();
+      }
+    }
+
+    function handleDragOver(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dz = document.getElementById('dropZone');
+      if (dz) dz.classList.add('border-emerald-400', 'bg-emerald-950/20');
+    }
+
+    function handleDragLeave(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dz = document.getElementById('dropZone');
+      if (dz) dz.classList.remove('border-emerald-400', 'bg-emerald-950/20');
+    }
+
+    function handleFileDrop(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dz = document.getElementById('dropZone');
+      if (dz) dz.classList.remove('border-emerald-400', 'bg-emerald-950/20');
+
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length > 0) {
+        readGpxFile(files[0]);
+      }
+    }
+
+    function handleFileSelect(e) {
+      const files = e.target && e.target.files;
+      if (files && files.length > 0) {
+        readGpxFile(files[0]);
+      }
+    }
+
+    function readGpxFile(file) {
+      const reader = new FileReader();
+      reader.onload = function (evt) {
+        try {
+          const xmlText = evt.target.result;
+          const parsed = parseGpxXml(xmlText, file.name);
+          loadTrackIntoViewer(parsed);
+          showToast(`Loaded "${parsed.name}" (${parsed.points.length.toLocaleString()} exact points, ${parsed.totalDistKm.toFixed(2)} km)`, 'success');
+        } catch (err) {
+          console.error('GPX parse error:', err);
+          showToast(err.message || 'Could not parse GPX file.', 'error');
+        }
+      };
+      reader.onerror = function () {
+        showToast('Failed to read the selected file.', 'error');
+      };
+      reader.readAsText(file);
+    }
+
+    function parseGpxXml(xmlText, fileName = 'route.gpx') {
+      if (!xmlText || typeof xmlText !== 'string') {
+        throw new Error('Empty GPX file.');
+      }
+
+      const parser = new DOMParser();
+      let xmlDoc = parser.parseFromString(xmlText, 'application/xml');
+      if (xmlDoc.querySelector('parsererror')) {
+        // Fallback tolerant HTML/XML parser for unescaped ampersands
+        xmlDoc = parser.parseFromString(xmlText, 'text/html');
+      }
+
+      const nameEl = xmlDoc.querySelector('trk > name, rte > name, metadata > name, name');
+      const trackName = (nameEl && nameEl.textContent.trim()) || fileName.replace(/\.gpx$/i, '');
+
+      const segments = [];
+      const trksegs = xmlDoc.querySelectorAll('trkseg');
+
+      if (trksegs.length > 0) {
+        trksegs.forEach((seg) => {
+          const segPts = [];
+          seg.querySelectorAll('trkpt').forEach((pt) => {
+            const lat = parseFloat(pt.getAttribute('lat'));
+            const lon = parseFloat(pt.getAttribute('lon'));
+            if (!isNaN(lat) && !isNaN(lon)) {
+              const eleEl = pt.querySelector('ele');
+              const ele = eleEl ? parseFloat(eleEl.textContent) : 0;
+              segPts.push({ lat, lon, ele: isNaN(ele) ? 0 : ele });
+            }
+          });
+          if (segPts.length > 0) segments.push(segPts);
+        });
+      }
+
+      // Fallback to <trkpt>, <rtept>, or <wpt> if no <trkseg> found
+      if (segments.length === 0) {
+        const fallbackPts = [];
+        const nodes = xmlDoc.querySelectorAll('trkpt, rtept, wpt');
+        nodes.forEach((pt) => {
+          const lat = parseFloat(pt.getAttribute('lat'));
+          const lon = parseFloat(pt.getAttribute('lon'));
+          if (!isNaN(lat) && !isNaN(lon)) {
+            const eleEl = pt.querySelector('ele');
+            const ele = eleEl ? parseFloat(eleEl.textContent) : 0;
+            fallbackPts.push({ lat, lon, ele: isNaN(ele) ? 0 : ele });
+          }
+        });
+        if (fallbackPts.length > 0) segments.push(fallbackPts);
+      }
+
+      if (segments.length === 0) {
+        throw new Error('No valid <trkpt>, <rtept>, or <wpt> coordinates found in file.');
+      }
+
+      return buildTrackMetrics(trackName, fileName, xmlText, segments);
+    }
+
+    function haversineKm(lat1, lon1, lat2, lon2) {
+      const R = 6371.0088;
+      const dLat = ((lat2 - lat1) * Math.PI) / 180;
+      const dLon = ((lon2 - lon1) * Math.PI) / 180;
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos((lat1 * Math.PI) / 180) *
+          Math.cos((lat2 * Math.PI) / 180) *
+          Math.sin(dLon / 2) *
+          Math.sin(dLon / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function buildTrackMetrics(name, fileName, rawXml, segments) {
+      const allPoints = [];
+      let cumulativeKm = 0;
+      let gainM = 0;
+      let lossM = 0;
+      let minEle = Infinity;
+      let maxEle = -Infinity;
+
+      segments.forEach((seg, segIdx) => {
+        seg.forEach((pt, idx) => {
+          let stepKm = 0;
+          let grade = 0;
+
+          if (idx > 0) {
+            const prev = seg[idx - 1];
+            stepKm = haversineKm(prev.lat, prev.lon, pt.lat, pt.lon);
+            cumulativeKm += stepKm;
+
+            const dEle = pt.ele - prev.ele;
+            // Small 1.5m deadband for barometric/GPS noise when summing total climb
+            if (dEle > 0) gainM += dEle;
+            else if (dEle < 0) lossM += Math.abs(dEle);
+
+            if (stepKm > 0.0005) {
+              grade = (dEle / (stepKm * 1000)) * 100;
+            }
+          }
+
+          if (pt.ele < minEle) minEle = pt.ele;
+          if (pt.ele > maxEle) maxEle = pt.ele;
+
+          allPoints.push({
+            index: allPoints.length,
+            segmentIndex: segIdx,
+            lat: pt.lat,
+            lon: pt.lon,
+            ele: pt.ele,
+            distKm: cumulativeKm,
+            grade,
+          });
+        });
+      });
+
+      if (!isFinite(minEle)) minEle = 0;
+      if (!isFinite(maxEle)) maxEle = 0;
+
+      return {
+        name,
+        fileName,
+        rawXml,
+        segments,
+        points: allPoints,
+        segmentsCount: segments.length,
+        totalDistKm: cumulativeKm,
+        gainM,
+        lossM,
+        minEle,
+        maxEle,
+      };
+    }
+
+    // =========================================================================
+    // RENDER ROUTE ON MAP & ELEVATION CHART
+    // =========================================================================
+    function loadTrackIntoViewer(trackData) {
+      activeTrackData = trackData;
+
+      // Update Header & Dropzone Labels
+      document.getElementById('headerSubtitle').textContent = `${trackData.name} • ${trackData.totalDistKm.toFixed(2)} km`;
+      document.getElementById('activeTrackTitle').textContent = trackData.name;
+      document.getElementById('activeTrackMeta').textContent = `${trackData.fileName} • ${trackData.points.length.toLocaleString()} exact coordinates across ${trackData.segmentsCount} segment(s)`;
+
+      // Update Telemetry Cards
+      document.getElementById('statDistance').textContent = `${trackData.totalDistKm.toFixed(2)} km`;
+      document.getElementById('statGain').textContent = `+${Math.round(trackData.gainM)} m`;
+      document.getElementById('statLoss').textContent = `-${Math.round(trackData.lossM)} m`;
+      document.getElementById('statMinMax').textContent = `${Math.round(trackData.minEle)} / ${Math.round(trackData.maxEle)} m`;
+      document.getElementById('statPoints').textContent = trackData.points.length.toLocaleString();
+      document.getElementById('statSegments').textContent = String(trackData.segmentsCount);
+
+      // Enable Export & Clear Buttons
+      document.getElementById('exportGpxBtn').disabled = false;
+      document.getElementById('clearTrackBtn').disabled = false;
+
+      renderMapRoute(trackData);
+      renderElevationChart(trackData);
+    }
+
+    function getSlopeColor(grade) {
+      const absG = Math.abs(grade);
+      if (absG >= 15) return '#f43f5e'; // Rose (very steep)
+      if (absG >= 8) return '#f59e0b';  // Amber (moderate climb/descent)
+      return '#10b981';                 // Emerald (runnable/flat)
+    }
+
+    function renderMapRoute(trackData) {
+      if (!map || !routeLayerGroup || !markerLayerGroup) return;
+      routeLayerGroup.clearLayers();
+      markerLayerGroup.clearLayers();
+
+      const allLatLngs = [];
+
+      trackData.segments.forEach((seg) => {
+        if (seg.length === 0) return;
+        const segLatLngs = seg.map((p) => [p.lat, p.lon]);
+        segLatLngs.forEach((ll) => allLatLngs.push(ll));
+
+        // Base dark outline for crisp contrast on satellite/topo
+        L.polyline(segLatLngs, {
+          color: '#020617',
+          weight: 7,
+          opacity: 0.75,
+        }).addTo(routeLayerGroup);
+
+        // If very dense (> 4000 pts), draw smooth emerald polyline for instant performance; otherwise color by slope
+        if (trackData.points.length > 4500) {
+          L.polyline(segLatLngs, {
+            color: '#10b981',
+            weight: 4,
+            opacity: 0.95,
+          }).addTo(routeLayerGroup);
+        } else {
+          for (let i = 1; i < seg.length; i++) {
+            const p1 = seg[i - 1];
+            const p2 = seg[i];
+            const dKm = haversineKm(p1.lat, p1.lon, p2.lat, p2.lon);
+            const grade = dKm > 0.0005 ? ((p2.ele - p1.ele) / (dKm * 1000)) * 100 : 0;
+            L.polyline(
+              [
+                [p1.lat, p1.lon],
+                [p2.lat, p2.lon],
+              ],
+              {
+                color: getSlopeColor(grade),
+                weight: 4.5,
+                opacity: 0.95,
+              }
+            ).addTo(routeLayerGroup);
+          }
+        }
+      });
+
+      // Start & Finish Markers
+      const firstPt = trackData.points[0];
+      const lastPt = trackData.points[trackData.points.length - 1];
+
+      if (firstPt) {
+        L.circleMarker([firstPt.lat, firstPt.lon], {
+          radius: 7,
+          fillColor: '#10b981',
+          color: '#ffffff',
+          weight: 2.5,
+          fillOpacity: 1,
+        })
+          .bindPopup(`<b>Start</b><br>${firstPt.lat.toFixed(6)}, ${firstPt.lon.toFixed(6)}<br>Elev: ${firstPt.ele.toFixed(1)} m`)
+          .addTo(markerLayerGroup);
+      }
+
+      if (lastPt && trackData.points.length > 1) {
+        L.circleMarker([lastPt.lat, lastPt.lon], {
+          radius: 7,
+          fillColor: '#f43f5e',
+          color: '#ffffff',
+          weight: 2.5,
+          fillOpacity: 1,
+        })
+          .bindPopup(`<b>Finish</b><br>${lastPt.lat.toFixed(6)}, ${lastPt.lon.toFixed(6)}<br>Dist: ${trackData.totalDistKm.toFixed(2)} km`)
+          .addTo(markerLayerGroup);
+      }
+
+      // Kilometer Markers every 1 km (or every 2 km if > 25 km)
+      const kmStep = trackData.totalDistKm > 25 ? 2 : 1;
+      let nextKmMark = kmStep;
+      for (let i = 1; i < trackData.points.length; i++) {
+        const pt = trackData.points[i];
+        if (pt.distKm >= nextKmMark) {
+          const icon = L.divIcon({
+            className: '',
+            html: `<span class="km-badge">${nextKmMark}k</span>`,
+            iconSize: [32, 18],
+            iconAnchor: [16, 9],
+          });
+          L.marker([pt.lat, pt.lon], { icon, interactive: false }).addTo(markerLayerGroup);
+          nextKmMark += kmStep;
+        }
+      }
+
+      // Hover Sync Marker
+      hoverMapMarker = L.circleMarker([firstPt.lat, firstPt.lon], {
+        radius: 6,
+        fillColor: '#38bdf8',
+        color: '#ffffff',
+        weight: 2,
+        fillOpacity: 0,
+        opacity: 0,
+      }).addTo(markerLayerGroup);
+
+      if (allLatLngs.length > 0) {
+        const bounds = L.latLngBounds(allLatLngs);
+        map.fitBounds(bounds, { padding: [36, 36] });
+      }
+    }
+
+    function fitRouteBounds() {
+      if (!map || !activeTrackData || !activeTrackData.points.length) {
+        showToast('Upload a .GPX file first to fit route bounds.', 'info');
+        return;
+      }
+      const bounds = L.latLngBounds(activeTrackData.points.map((p) => [p.lat, p.lon]));
+      map.fitBounds(bounds, { padding: [36, 36] });
+    }
+
+    function clearLoadedTrack() {
+      if (isSimulatingGps) stopSimulatedGps(true);
+      activeTrackData = null;
+
+      if (routeLayerGroup) routeLayerGroup.clearLayers();
+      if (markerLayerGroup) markerLayerGroup.clearLayers();
+
+      document.getElementById('headerSubtitle').textContent = 'Upload any .GPX file to inspect elevation & navigate live';
+      document.getElementById('activeTrackTitle').textContent = 'No .GPX File Loaded Yet';
+      document.getElementById('activeTrackMeta').innerHTML =
+        'Drag &amp; drop a <span class="text-slate-200 font-medium">.gpx</span> file here, or click <span class="text-emerald-400 font-medium">Choose .GPX File</span> to load 100% of your exact coordinates.';
+
+      document.getElementById('statDistance').textContent = '-- km';
+      document.getElementById('statGain').textContent = '-- m';
+      document.getElementById('statLoss').textContent = '-- m';
+      document.getElementById('statMinMax').textContent = '-- / -- m';
+      document.getElementById('statPoints').textContent = '0';
+      document.getElementById('statSegments').textContent = '0';
+
+      document.getElementById('exportGpxBtn').disabled = true;
+      document.getElementById('clearTrackBtn').disabled = true;
+      document.getElementById('hoverReadout').classList.add('hidden');
+
+      const svg = d3.select('#elevationSvg');
+      svg.selectAll('*').remove();
+      const emptyEl = document.getElementById('chartEmptyState');
+      if (emptyEl) emptyEl.classList.remove('hidden');
+
+      showToast('Cleared route from viewer.', 'info');
+    }
+
+    function downloadCurrentGpx() {
+      if (!activeTrackData) return;
+      const blob = new Blob([activeTrackData.rawXml], { type: 'application/gpx+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = activeTrackData.fileName || 'trail.gpx';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // =========================================================================
+    // D3 INTERACTIVE ELEVATION PROFILE
+    // =========================================================================
+    function renderElevationChart(trackData) {
+      const wrapper = document.getElementById('chartWrapper');
+      const svg = d3.select('#elevationSvg');
+      const emptyEl = document.getElementById('chartEmptyState');
+
+      if (!wrapper || !trackData || !trackData.points || trackData.points.length < 2) {
+        if (emptyEl) emptyEl.classList.remove('hidden');
+        return;
+      }
+
+      // Hide empty state message cleanly
+      if (emptyEl) emptyEl.classList.add('hidden');
+      svg.selectAll('*').remove();
+
+      const width = wrapper.clientWidth || 720;
+      const height = wrapper.clientHeight || 220;
+      const margin = { top: 18, right: 18, bottom: 28, left: 46 };
+      const innerW = Math.max(120, width - margin.left - margin.right);
+      const innerH = Math.max(80, height - margin.top - margin.bottom);
+
+      svg.attr('viewBox', `0 0 ${width} ${height}`);
+
+      const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+      // Downsample for SVG rendering speed if > 2500 points while keeping full hover lookup
+      const pts = trackData.points;
+      const stride = Math.max(1, Math.floor(pts.length / 2000));
+      const chartPts = pts.filter((_, idx) => idx % stride === 0 || idx === pts.length - 1);
+
+      const xScale = d3
+        .scaleLinear()
+        .domain([0, Math.max(0.01, trackData.totalDistKm)])
+        .range([0, innerW]);
+
+      const elePad = Math.max(10, (trackData.maxEle - trackData.minEle) * 0.12);
+      const yScale = d3
+        .scaleLinear()
+        .domain([Math.max(0, trackData.minEle - elePad), trackData.maxEle + elePad])
+        .range([innerH, 0]);
+
+      // Gradient fill
+      const defs = svg.append('defs');
+      const grad = defs
+        .append('linearGradient')
+        .attr('id', 'eleAreaGrad')
+        .attr('x1', '0%')
+        .attr('y1', '0%')
+        .attr('x2', '0%')
+        .attr('y2', '100%');
+      grad.append('stop').attr('offset', '0%').attr('stop-color', '#10b981').attr('stop-opacity', 0.45);
+      grad.append('stop').attr('offset', '100%').attr('stop-color', '#10b981').attr('stop-opacity', 0.02);
+
+      // Horizontal Gridlines
+      g.append('g')
+        .attr('class', 'grid')
+        .call(d3.axisLeft(yScale).ticks(4).tickSize(-innerW).tickFormat(''))
+        .selectAll('line')
+        .attr('stroke', '#1e293b')
+        .attr('stroke-dasharray', '3,3');
+      g.selectAll('.domain').remove();
+
+      // Area & Line
+      const area = d3
+        .area()
+        .x((d) => xScale(d.distKm))
+        .y0(innerH)
+        .y1((d) => yScale(d.ele));
+
+      const line = d3
+        .line()
+        .x((d) => xScale(d.distKm))
+        .y((d) => yScale(d.ele));
+
+      g.append('path').datum(chartPts).attr('fill', 'url(#eleAreaGrad)').attr('d', area);
+
+      g.append('path')
+        .datum(chartPts)
+        .attr('fill', 'none')
+        .attr('stroke', '#10b981')
+        .attr('stroke-width', 2.2)
+        .attr('d', line);
+
+      // Axes
+      g.append('g')
+        .attr('transform', `translate(0,${innerH})`)
+        .call(d3.axisBottom(xScale).ticks(6).tickFormat((d) => `${d.toFixed(1)} km`))
+        .selectAll('text')
+        .attr('fill', '#94a3b8')
+        .style('font-size', '10px');
+
+      g.append('g')
+        .call(d3.axisLeft(yScale).ticks(4).tickFormat((d) => `${Math.round(d)}m`))
+        .selectAll('text')
+        .attr('fill', '#94a3b8')
+        .style('font-size', '10px');
+
+      g.selectAll('.domain, .tick line').attr('stroke', '#334155');
+
+      // Crosshair & Hover Point
+      const focusLine = g
+        .append('line')
+        .attr('y1', 0)
+        .attr('y2', innerH)
+        .attr('stroke', '#38bdf8')
+        .attr('stroke-width', 1.2)
+        .attr('stroke-dasharray', '3,3')
+        .style('opacity', 0);
+
+      const focusDot = g
+        .append('circle')
+        .attr('r', 4.5)
+        .attr('fill', '#38bdf8')
+        .attr('stroke', '#ffffff')
+        .attr('stroke-width', 1.5)
+        .style('opacity', 0);
+
+      const bisect = d3.bisector((d) => d.distKm).left;
+
+      function handlePointerMove(event) {
+        const [mx] = d3.pointer(event);
+        const clampedX = Math.max(0, Math.min(innerW, mx));
+        const targetDist = xScale.invert(clampedX);
+        const idx = Math.min(pts.length - 1, Math.max(0, bisect(pts, targetDist)));
+        const pt = pts[idx];
+
+        focusLine.attr('x1', xScale(pt.distKm)).attr('x2', xScale(pt.distKm)).style('opacity', 1);
+        focusDot.attr('cx', xScale(pt.distKm)).attr('cy', yScale(pt.ele)).style('opacity', 1);
+
+        const readout = document.getElementById('hoverReadout');
+        if (readout) {
+          readout.classList.remove('hidden');
+          readout.textContent = `Dist: ${pt.distKm.toFixed(2)} km | Elev: ${pt.ele.toFixed(1)} m | ${pt.lat.toFixed(5)}, ${pt.lon.toFixed(5)}`;
+        }
+
+        if (hoverMapMarker) {
+          hoverMapMarker.setLatLng([pt.lat, pt.lon]);
+          hoverMapMarker.setStyle({ opacity: 1, fillOpacity: 1 });
+        }
+      }
+
+      function handlePointerLeave() {
+        focusLine.style('opacity', 0);
+        focusDot.style('opacity', 0);
+        if (hoverMapMarker) {
+          hoverMapMarker.setStyle({ opacity: 0, fillOpacity: 0 });
+        }
+      }
+
+      g.append('rect')
+        .attr('width', innerW)
+        .attr('height', innerH)
+        .attr('fill', 'transparent')
+        .style('cursor', 'crosshair')
+        .on('mousemove touchmove', handlePointerMove)
+        .on('mouseleave touchend', handlePointerLeave);
+    }
+
+    // =========================================================================
+    // LIVE PHONE GPS & SIMULATED TEST GPS
+    // =========================================================================
+    function toggleGpsTracking() {
+      if (isSimulatingGps) {
+        stopSimulatedGps(false);
+      }
+      if (isGpsTracking) {
+        stopGpsTracking();
+      } else {
+        startGpsTracking(true);
+      }
+    }
+
+    function toggleSimulatedGps() {
+      if (isSimulatingGps) {
+        stopSimulatedGps(true);
+      } else {
+        startSimulatedGps();
+      }
+    }
+
+    function startSimulatedGps() {
+      if (isGpsTracking && !isSimulatingGps) {
+        stopGpsTracking();
+      }
+      if (simGpsInterval) {
+        clearInterval(simGpsInterval);
+        simGpsInterval = null;
+      }
+
+      isSimulatingGps = true;
+      isGpsTracking = true;
+      isGpsFollowing = true;
+      simPointIndex = 0;
+
+      dismissGpsDiagnostic();
+      updateGpsUiState();
+
+      const simBtn = document.getElementById('simGpsBtn');
+      const simLabel = document.getElementById('simGpsLabel');
+      if (simBtn && simLabel) {
+        simBtn.className =
+          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white border border-amber-400/50 text-xs font-semibold transition-all cursor-pointer shadow-md';
+        simLabel.textContent = 'Stop Test';
+      }
+
+      const stepSimulation = () => {
+        if (activeTrackData && activeTrackData.points && activeTrackData.points.length > 0) {
+          const pts = activeTrackData.points;
+          const pt = pts[simPointIndex % pts.length];
+          onGpsPositionUpdate({
+            coords: {
+              latitude: pt.lat,
+              longitude: pt.lon,
+              accuracy: 5,
+            },
+          });
+          const step = Math.max(1, Math.floor(pts.length / 80));
+          simPointIndex = (simPointIndex + step) % pts.length;
+        } else {
+          // Simulate movement near Pattaya / Chon Buri if no GPX is loaded yet
+          const stepOffset = (simPointIndex % 50) * 0.0004;
+          onGpsPositionUpdate({
+            coords: {
+              latitude: 12.9236 + stepOffset * 0.5,
+              longitude: 100.8825 + stepOffset,
+              accuracy: 8,
+            },
+          });
+          simPointIndex++;
+        }
+      };
+
+      stepSimulation();
+      simGpsInterval = setInterval(stepSimulation, 900);
+      showToast('Test GPS started — simulating live movement on map.', 'success');
+    }
+
+    function stopSimulatedGps(resetMarker = true) {
+      isSimulatingGps = false;
+      if (simGpsInterval) {
+        clearInterval(simGpsInterval);
+        simGpsInterval = null;
+      }
+      const simBtn = document.getElementById('simGpsBtn');
+      const simLabel = document.getElementById('simGpsLabel');
+      if (simBtn && simLabel) {
+        simBtn.className =
+          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer';
+        simLabel.textContent = 'Test GPS';
+      }
+      if (resetMarker) {
+        stopGpsTracking();
+      }
+    }
+
+    async function startGpsTracking(highAccuracy = true) {
+      if (!('geolocation' in navigator)) {
+        showGpsDiagnostic(
+          'Geolocation Not Supported',
+          'Your browser does not support navigator.geolocation.'
+        );
+        return;
+      }
+
+      isGpsTracking = true;
+      isGpsFollowing = true;
+      dismissGpsDiagnostic();
+      updateGpsUiState();
+
+      const statusText = document.getElementById('gpsStatusText');
+      if (statusText) statusText.textContent = 'Requesting device GPS location...';
+
+      if (gpsWatchId !== null) {
+        navigator.geolocation.clearWatch(gpsWatchId);
+        gpsWatchId = null;
+      }
+
+      gpsWatchId = navigator.geolocation.watchPosition(
+        onGpsPositionUpdate,
+        onGpsPositionError,
+        {
+          enableHighAccuracy: highAccuracy,
+          maximumAge: 3000,
+          timeout: 15000,
+        }
+      );
+    }
+
+    function stopGpsTracking() {
+      isGpsTracking = false;
+      if (gpsWatchId !== null && 'geolocation' in navigator) {
+        navigator.geolocation.clearWatch(gpsWatchId);
+        gpsWatchId = null;
+      }
+      if (userLocationMarker && map) {
+        map.removeLayer(userLocationMarker);
+        userLocationMarker = null;
+      }
+      if (userAccuracyCircle && map) {
+        map.removeLayer(userAccuracyCircle);
+        userAccuracyCircle = null;
+      }
+      lastUserPosition = null;
+      updateGpsUiState();
+    }
+
+    function updateGpsUiState() {
+      const toggleBtn = document.getElementById('gpsToggleBtn');
+      const toggleLabel = document.getElementById('gpsToggleLabel');
+      const centerBtn = document.getElementById('centerGpsBtn');
+      const statusBar = document.getElementById('gpsStatusBar');
+
+      if (isGpsTracking && !isSimulatingGps) {
+        toggleBtn.className =
+          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white border border-sky-400/50 text-xs font-semibold transition-all cursor-pointer shadow-md';
+        toggleLabel.textContent = 'GPS On';
+      } else {
+        toggleBtn.className =
+          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer';
+        toggleLabel.textContent = 'My GPS';
+      }
+
+      if (isGpsTracking) {
+        centerBtn.classList.remove('hidden');
+        statusBar.classList.remove('hidden');
+      } else {
+        centerBtn.classList.add('hidden');
+        statusBar.classList.add('hidden');
+      }
+    }
+
+    function centerOnUserGps() {
+      if (!map || !lastUserPosition) {
+        showToast('Waiting for GPS fix...', 'info');
+        return;
+      }
+      isGpsFollowing = true;
+      map.setView([lastUserPosition.lat, lastUserPosition.lon], Math.max(map.getZoom(), 15), {
+        animate: true,
+      });
+    }
+
+    function onGpsPositionUpdate(position) {
+      if (!map) return;
+      const lat = position.coords.latitude;
+      const lon = position.coords.longitude;
+      const accuracy = position.coords.accuracy || 10;
+      lastUserPosition = { lat, lon, accuracy };
+
+      if (!userLocationMarker) {
+        const gpsIcon = L.divIcon({
+          className: '',
+          html: '<div class="user-gps-marker"><div class="user-gps-pulse"></div><div class="user-gps-dot"></div></div>',
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        });
+        userLocationMarker = L.marker([lat, lon], { icon: gpsIcon, zIndexOffset: 1000 }).addTo(map);
+      } else {
+        userLocationMarker.setLatLng([lat, lon]);
+      }
+
+      if (!userAccuracyCircle) {
+        userAccuracyCircle = L.circle([lat, lon], {
+          radius: accuracy,
+          color: '#38bdf8',
+          fillColor: '#0ea5e9',
+          fillOpacity: 0.14,
+          weight: 1,
+        }).addTo(map);
+      } else {
+        userAccuracyCircle.setLatLng([lat, lon]);
+        userAccuracyCircle.setRadius(accuracy);
+      }
+
+      if (isGpsFollowing) {
+        map.setView([lat, lon], Math.max(map.getZoom(), 15), { animate: true });
+      }
+
+      const modeTag = isSimulatingGps ? 'SIMULATED GPS' : `LIVE GPS (±${Math.round(accuracy)}m)`;
+      document.getElementById('gpsStatusText').textContent = `${modeTag}: ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+
+      // Calculate nearest point on loaded GPX route
+      const navMetrics = document.getElementById('gpsNavMetrics');
+      if (activeTrackData && activeTrackData.points && activeTrackData.points.length > 0) {
+        let minDistKm = Infinity;
+        let nearestPt = activeTrackData.points[0];
+
+        for (let i = 0; i < activeTrackData.points.length; i++) {
+          const pt = activeTrackData.points[i];
+          const d = haversineKm(lat, lon, pt.lat, pt.lon);
+          if (d < minDistKm) {
+            minDistKm = d;
+            nearestPt = pt;
+          }
+        }
+
+        const offTrailM = Math.round(minDistKm * 1000);
+        const remKm = Math.max(0, activeTrackData.totalDistKm - nearestPt.distKm);
+        const offTrailWarning = offTrailM > 50 ? ` • ⚠️ ${offTrailM}m off trail` : ` • On trail (${offTrailM}m)`;
+        navMetrics.textContent = `Progress: ${nearestPt.distKm.toFixed(2)} km | Rem: ${remKm.toFixed(2)} km${offTrailWarning}`;
+      } else {
+        navMetrics.textContent = 'Upload a .GPX file to see distance remaining';
+      }
+    }
+
+    function onGpsPositionError(err) {
+      stopGpsTracking();
+      const inIframe = window.self !== window.top;
+      let title = 'GPS Location Blocked or Unavailable';
+      let detail = err && err.message ? `Browser reported: "${err.message}". ` : '';
+
+      if (inIframe) {
+        title = 'Blocked by Embedded Iframe (Google Sites / Apps Script)';
+        detail +=
+          'This page is running inside an embedded sandbox iframe without geolocation permission. To use real phone GPS, host this HTML file directly on a top-level HTTPS URL (such as GitHub Pages or Netlify Drop) instead of embedding in Google Sites.';
+      } else {
+        detail +=
+          'Check your browser address-bar Site Settings → Location → Allow, and ensure Location Services are turned ON in your phone settings.';
+      }
+
+      showGpsDiagnostic(title, detail);
+    }
+
+    function showGpsDiagnostic(title, detail) {
+      const box = document.getElementById('gpsDiagnosticBox');
+      const titleEl = document.getElementById('gpsDiagTitle');
+      const detailEl = document.getElementById('gpsDiagDetail');
+      if (box && titleEl && detailEl) {
+        titleEl.textContent = title;
+        detailEl.textContent = detail;
+        box.classList.remove('hidden');
+      }
+    }
+
+    function dismissGpsDiagnostic() {
+      const box = document.getElementById('gpsDiagnosticBox');
+      if (box) box.classList.add('hidden');
+    }
+
+    // =========================================================================
+    // STARTUP INITIALIZATION
+    // =========================================================================
+    window.addEventListener('DOMContentLoaded', () => {
+      try {
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+      } catch (e) {
+        console.warn('Lucide icons warning:', e);
+      }
+
+      initMap();
+
+      window.addEventListener('resize', () => {
+        if (map) map.invalidateSize();
+        if (activeTrackData) renderElevationChart(activeTrackData);
+      });
+    });
+  </script>
+</body>
+</html>
