@@ -293,14 +293,6 @@
           >
             Street
           </button>
-          <button
-            id="layerDarkBtn"
-            type="button"
-            onclick="setBaseLayer('dark')"
-            class="px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition-all cursor-pointer"
-          >
-            Dark
-          </button>
         </div>
 
         <!-- GPS & Map Controls -->
@@ -490,10 +482,6 @@
           maxZoom: 19,
           attribution: '&copy; OpenStreetMap contributors',
         }),
-        dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-          maxZoom: 19,
-          attribution: '&copy; OpenStreetMap &copy; CARTO',
-        }),
       };
 
       currentBaseLayer = baseLayers.topo;
@@ -514,9 +502,6 @@
         // Fallback custom North arrow badge if compass plugin script is loading
         const NorthControl = L.Control.extend({
           options: { position: 'topright' },
-          onளுடைய: function() {
-            return div;
-          },
           onAdd: function() {
             const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
             div.style.background = 'rgba(15, 23, 42, 0.9)';
@@ -556,7 +541,6 @@
         topo: 'layerTopoBtn',
         satellite: 'layerSatBtn',
         street: 'layerStreetBtn',
-        dark: 'layerDarkBtn',
       };
 
       Object.entries(btnMap).forEach(([key, id]) => {
