@@ -30,6 +30,10 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 
+  <!-- Leaflet Compass Plugin for North Indicator -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-compass@v1.5.0/dist/leaflet-compass.min.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet-compass@v1.5.0/dist/leaflet-compass.min.js" crossorigin=""></script>
+
   <!-- D3.js for Interactive Elevation Profile -->
   <script src="https://d3js.org/d3.v7.min.js"></script>
 
@@ -313,18 +317,6 @@
             <span id="gpsToggleLabel">My GPS</span>
           </button>
 
-          <!-- Simulated GPS for Testing -->
-          <button
-            id="simGpsBtn"
-            type="button"
-            onclick="toggleSimulatedGps()"
-            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer"
-            title="Simulate moving along the trail to test GPS tracking"
-          >
-            <i data-lucide="play-circle" class="w-3.5 h-3.5 text-amber-400"></i>
-            <span id="simGpsLabel">Test GPS</span>
-          </button>
-
           <!-- Center on User GPS -->
           <button
             id="centerGpsBtn"
@@ -369,13 +361,6 @@
         </div>
         <p id="gpsDiagDetail" class="text-rose-200/90 leading-relaxed"></p>
         <div class="flex flex-wrap items-center gap-2 pt-1">
-          <button
-            type="button"
-            onclick="startSimulatedGps()"
-            class="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs cursor-pointer"
-          >
-            Run Test GPS Simulation Instead
-          </button>
           <button
             type="button"
             onclick="startGpsTracking(false)"
@@ -516,6 +501,40 @@
 
       routeLayerGroup = L.layerGroup().addTo(map);
       markerLayerGroup = L.layerGroup().addTo(map);
+
+      // Add North Compass Control to map
+      if (typeof L.Control.Compass === 'function') {
+        const compass = new L.Control.Compass({
+          autoHide: false,
+          textCompass: 'North',
+          position: 'topright'
+        });
+        map.addControl(compass);
+      } else {
+        // Fallback custom North arrow badge if compass plugin script is loading
+        const NorthControl = L.Control.extend({
+          options: { position: 'topright' },
+          onளுடைய: function() {
+            return div;
+          },
+          onAdd: function() {
+            const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+            div.style.background = 'rgba(15, 23, 42, 0.9)';
+            div.style.border = '1px solid #334155';
+            div.style.borderRadius = '8px';
+            div.style.padding = '6px 10px';
+            div.style.color = '#38bdf8';
+            div.style.fontSize = '11px';
+            div.style.fontWeight = '700';
+            div.style.display = 'flex';
+            div.style.alignItems = 'center';
+            div.style.gap = '4px';
+            div.innerHTML = '<span style="font-size:14px; color:#f43f5e;">▲</span> NORTH';
+            return div;
+          }
+        });
+        map.addControl(new NorthControl());
+      }
 
       // Pause auto-follow if user manually drags the map
       map.on('dragstart', () => {
@@ -1104,96 +1123,10 @@
     // LIVE PHONE GPS & SIMULATED TEST GPS
     // =========================================================================
     function toggleGpsTracking() {
-      if (isSimulatingGps) {
-        stopSimulatedGps(false);
-      }
       if (isGpsTracking) {
         stopGpsTracking();
       } else {
         startGpsTracking(true);
-      }
-    }
-
-    function toggleSimulatedGps() {
-      if (isSimulatingGps) {
-        stopSimulatedGps(true);
-      } else {
-        startSimulatedGps();
-      }
-    }
-
-    function startSimulatedGps() {
-      if (isGpsTracking && !isSimulatingGps) {
-        stopGpsTracking();
-      }
-      if (simGpsInterval) {
-        clearInterval(simGpsInterval);
-        simGpsInterval = null;
-      }
-
-      isSimulatingGps = true;
-      isGpsTracking = true;
-      isGpsFollowing = true;
-      simPointIndex = 0;
-
-      dismissGpsDiagnostic();
-      updateGpsUiState();
-
-      const simBtn = document.getElementById('simGpsBtn');
-      const simLabel = document.getElementById('simGpsLabel');
-      if (simBtn && simLabel) {
-        simBtn.className =
-          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white border border-amber-400/50 text-xs font-semibold transition-all cursor-pointer shadow-md';
-        simLabel.textContent = 'Stop Test';
-      }
-
-      const stepSimulation = () => {
-        if (activeTrackData && activeTrackData.points && activeTrackData.points.length > 0) {
-          const pts = activeTrackData.points;
-          const pt = pts[simPointIndex % pts.length];
-          onGpsPositionUpdate({
-            coords: {
-              latitude: pt.lat,
-              longitude: pt.lon,
-              accuracy: 5,
-            },
-          });
-          const step = Math.max(1, Math.floor(pts.length / 80));
-          simPointIndex = (simPointIndex + step) % pts.length;
-        } else {
-          // Simulate movement near Pattaya / Chon Buri if no GPX is loaded yet
-          const stepOffset = (simPointIndex % 50) * 0.0004;
-          onGpsPositionUpdate({
-            coords: {
-              latitude: 12.9236 + stepOffset * 0.5,
-              longitude: 100.8825 + stepOffset,
-              accuracy: 8,
-            },
-          });
-          simPointIndex++;
-        }
-      };
-
-      stepSimulation();
-      simGpsInterval = setInterval(stepSimulation, 900);
-      showToast('Test GPS started — simulating live movement on map.', 'success');
-    }
-
-    function stopSimulatedGps(resetMarker = true) {
-      isSimulatingGps = false;
-      if (simGpsInterval) {
-        clearInterval(simGpsInterval);
-        simGpsInterval = null;
-      }
-      const simBtn = document.getElementById('simGpsBtn');
-      const simLabel = document.getElementById('simGpsLabel');
-      if (simBtn && simLabel) {
-        simBtn.className =
-          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer';
-        simLabel.textContent = 'Test GPS';
-      }
-      if (resetMarker) {
-        stopGpsTracking();
       }
     }
 
@@ -1290,12 +1223,12 @@
       const statusBar = document.getElementById('gpsStatusBar');
 
       if (isGpsTracking) {
-        if (gpsBtn && !isSimulatingGps) {
+        if (gpsBtn) {
           gpsBtn.className =
             'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white border border-sky-400/50 text-xs font-semibold transition-all cursor-pointer shadow-md';
         }
         if (gpsLabel) {
-          gpsLabel.textContent = isSimulatingGps ? 'My GPS' : 'Stop GPS';
+          gpsLabel.textContent = 'Stop GPS';
         }
         if (centerBtn) centerBtn.classList.remove('hidden');
         if (statusBar) statusBar.classList.remove('hidden');
@@ -1352,8 +1285,7 @@
       const navMetrics = document.getElementById('gpsNavMetrics');
 
       if (statusText) {
-        const modeTag = isSimulatingGps ? 'TEST GPS' : 'LIVE GPS';
-        statusText.textContent = `${modeTag}: ${lat.toFixed(5)}, ${lon.toFixed(5)} (±${Math.round(accuracy)}m)`;
+        statusText.textContent = `LIVE GPS: ${lat.toFixed(5)}, ${lon.toFixed(5)} (±${Math.round(accuracy)}m)`;
       }
 
       if (navMetrics) {
