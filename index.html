@@ -97,31 +97,60 @@
       100% { transform: scale(2.4); opacity: 0; }
     }
 
+    /* Map container rotation wrapper for Heading-Up navigation */
+    #mapViewportWrapper {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0f172a;
+    }
+
+    #map {
+      height: 100%;
+      width: 100%;
+      min-height: 360px;
+      z-index: 1;
+      background: #0f172a;
+      transition: transform 0.25s ease-out;
+      transform-origin: center center;
+    }
+
+    /* Oversize map slightly when rotated so corners never show blank gaps */
+    #map.heading-up-active {
+      width: 150%;
+      height: 150%;
+      margin-left: -25%;
+      margin-top: -15%;
+    }
+
+    /* Directional Heading Arrow GPS Marker */
     .user-gps-marker {
       position: relative;
-      width: 22px;
-      height: 22px;
+      width: 36px;
+      height: 36px;
       display: flex;
       align-items: center;
       justify-content: center;
     }
     .user-gps-pulse {
       position: absolute;
-      width: 22px;
-      height: 22px;
+      width: 28px;
+      height: 28px;
       border-radius: 9999px;
-      background: rgba(56, 189, 248, 0.5);
+      background: rgba(56, 189, 248, 0.35);
       animation: pulseRing 1.8s cubic-bezier(0.24, 0, 0.38, 1) infinite;
     }
-    .user-gps-dot {
+    .user-gps-arrow-wrap {
       position: relative;
-      width: 14px;
-      height: 14px;
-      border-radius: 9999px;
-      background: #0ea5e9;
-      border: 2.5px solid #ffffff;
-      box-shadow: 0 0 10px rgba(14, 165, 233, 0.95);
-      z-index: 2;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.15s linear;
+      z-index: 3;
+      filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.85));
     }
   </style>
 </head>
@@ -309,6 +338,30 @@
             <span id="gpsToggleLabel">My GPS</span>
           </button>
 
+          <!-- Navigation Orientation Mode: North-Up vs Heading-Up -->
+          <button
+            id="navModeBtn"
+            type="button"
+            onclick="toggleNavigationMode()"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer"
+            title="Switch between North-Up and Heading-Up turn-by-turn rotation"
+          >
+            <i data-lucide="navigation" class="w-3.5 h-3.5 text-amber-400"></i>
+            <span id="navModeLabel">North-Up</span>
+          </button>
+
+          <!-- Screen Wake Lock Toggle -->
+          <button
+            id="wakeLockBtn"
+            type="button"
+            onclick="toggleWakeLock()"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer"
+            title="Prevent phone screen from sleeping during trail navigation"
+          >
+            <i data-lucide="sun" class="w-3.5 h-3.5 text-amber-300"></i>
+            <span id="wakeLockLabel">Keep Awake</span>
+          </button>
+
           <!-- Center on User GPS -->
           <button
             id="centerGpsBtn"
@@ -364,8 +417,26 @@
       </div>
 
       <!-- Map Canvas Container -->
-      <div class="relative w-full h-[380px] sm:h-[460px] lg:h-[520px]">
-        <div id="map"></div>
+      <div class="relative w-full h-[380px] sm:h-[460px] lg:h-[520px] overflow-hidden">
+        <div id="mapViewportWrapper">
+          <div id="map"></div>
+        </div>
+
+        <!-- Dynamic North Compass Badge (rotates in Heading-Up mode so True North is always visible) -->
+        <div
+          id="dynamicNorthBadge"
+          onclick="resetNorthUp()"
+          title="True North Indicator (click to reset North-Up)"
+          class="absolute top-3 right-3 z-[400] bg-slate-950/90 backdrop-blur-md border border-slate-700/90 rounded-xl px-2.5 py-2 shadow-xl flex flex-col items-center justify-center cursor-pointer select-none hover:border-sky-500/60 transition-colors"
+        >
+          <div id="northNeedle" class="w-6 h-6 flex items-center justify-center transition-transform duration-150">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <polygon points="12,2 17,12 12,10 7,12" fill="#f43f5e" />
+              <polygon points="12,22 17,12 12,14 7,12" fill="#94a3b8" />
+            </svg>
+          </div>
+          <span id="headingDegreeLabel" class="font-mono text-[10px] font-bold text-sky-300 leading-none mt-0.5">N 0°</span>
+        </div>
 
         <!-- Legend Overlay -->
         <div class="absolute bottom-3 left-3 z-[400] bg-slate-950/85 backdrop-blur-md border border-slate-800 rounded-xl px-3 py-2 text-[11px] text-slate-300 flex flex-wrap items-center gap-3 pointer-events-none">
@@ -430,6 +501,13 @@
     let userLocationMarker = null;
     let userAccuracyCircle = null;
     let lastUserPosition = null;
+    let prevGpsPosition = null;
+
+    // Navigation Orientation & Wake Lock State
+    let isHeadingUpMode = false;
+    let currentHeadingDeg = 0;
+    let hasCompassSensor = false;
+    let wakeLockSentinel = null;
 
     // =========================================================================
     // TOAST NOTIFICATION HELPER
@@ -875,14 +953,16 @@
       }
 
       // Hover Sync Marker
-      hoverMapMarker = L.circleMarker([firstPt.lat, firstPt.lon], {
-        radius: 6,
-        fillColor: '#38bdf8',
-        color: '#ffffff',
-        weight: 2,
-        fillOpacity: 0,
-        opacity: 0,
-      }).addTo(markerLayerGroup);
+      if (firstPt) {
+        hoverMapMarker = L.circleMarker([firstPt.lat, firstPt.lon], {
+          radius: 6,
+          fillColor: '#38bdf8',
+          color: '#ffffff',
+          weight: 2,
+          fillOpacity: 0,
+          opacity: 0,
+        }).addTo(markerLayerGroup);
+      }
 
       if (allLatLngs.length > 0) {
         const bounds = L.latLngBounds(allLatLngs);
@@ -900,7 +980,6 @@
     }
 
     function clearLoadedTrack() {
-      if (isSimulatingGps) stopSimulatedGps(true);
       activeTrackData = null;
 
       if (routeLayerGroup) routeLayerGroup.clearLayers();
@@ -956,7 +1035,6 @@
         return;
       }
 
-      // Hide empty state message cleanly
       if (emptyEl) emptyEl.classList.add('hidden');
       svg.selectAll('*').remove();
 
@@ -970,7 +1048,6 @@
 
       const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
 
-      // Downsample for SVG rendering speed if > 2500 points while keeping full hover lookup
       const pts = trackData.points;
       const stride = Math.max(1, Math.floor(pts.length / 2000));
       const chartPts = pts.filter((_, idx) => idx % stride === 0 || idx === pts.length - 1);
@@ -986,7 +1063,6 @@
         .domain([Math.max(0, trackData.minEle - elePad), trackData.maxEle + elePad])
         .range([innerH, 0]);
 
-      // Gradient fill
       const defs = svg.append('defs');
       const grad = defs
         .append('linearGradient')
@@ -998,7 +1074,6 @@
       grad.append('stop').attr('offset', '0%').attr('stop-color', '#10b981').attr('stop-opacity', 0.45);
       grad.append('stop').attr('offset', '100%').attr('stop-color', '#10b981').attr('stop-opacity', 0.02);
 
-      // Horizontal Gridlines
       g.append('g')
         .attr('class', 'grid')
         .call(d3.axisLeft(yScale).ticks(4).tickSize(-innerW).tickFormat(''))
@@ -1007,7 +1082,6 @@
         .attr('stroke-dasharray', '3,3');
       g.selectAll('.domain').remove();
 
-      // Area & Line
       const area = d3
         .area()
         .x((d) => xScale(d.distKm))
@@ -1028,7 +1102,6 @@
         .attr('stroke-width', 2.2)
         .attr('d', line);
 
-      // Axes
       g.append('g')
         .attr('transform', `translate(0,${innerH})`)
         .call(d3.axisBottom(xScale).ticks(6).tickFormat((d) => `${d.toFixed(1)} km`))
@@ -1044,7 +1117,6 @@
 
       g.selectAll('.domain, .tick line').attr('stroke', '#334155');
 
-      // Crosshair & Hover Point
       const focusLine = g
         .append('line')
         .attr('y1', 0)
@@ -1104,8 +1176,204 @@
     }
 
     // =========================================================================
-    // LIVE PHONE GPS & SIMULATED TEST GPS
+    // LIVE PHONE GPS, DIRECTIONAL HEADING & TURN-BY-TURN ORIENTATION
     // =========================================================================
+    function calculateBearingDeg(lat1, lon1, lat2, lon2) {
+      const toRad = (deg) => (deg * Math.PI) / 180;
+      const toDeg = (rad) => (rad * 180) / Math.PI;
+      const φ1 = toRad(lat1);
+      const φ2 = toRad(lat2);
+      const Δλ = toRad(lon2 - lon1);
+
+      const y = Math.sin(Δλ) * Math.cos(φ2);
+      const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+      return (toDeg(Math.atan2(y, x)) + 360) % 360;
+    }
+
+    function getCardinalDirection(deg) {
+      const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+      const idx = Math.round(((deg % 360) / 45)) % 8;
+      return dirs[idx];
+    }
+
+    function handleDeviceOrientation(event) {
+      let heading = null;
+      if (typeof event.webkitCompassHeading === 'number' && !isNaN(event.webkitCompassHeading)) {
+        heading = event.webkitCompassHeading;
+      } else if (event.absolute === true && typeof event.alpha === 'number') {
+        heading = (360 - event.alpha) % 360;
+      } else if (typeof event.alpha === 'number') {
+        heading = (360 - event.alpha) % 360;
+      }
+
+      if (heading !== null && !isNaN(heading)) {
+        hasCompassSensor = true;
+        updateHeadingOrientation(heading);
+      }
+    }
+
+    async function enableCompassListener() {
+      try {
+        if (
+          typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function'
+        ) {
+          const perm = await DeviceOrientationEvent.requestPermission();
+          if (perm !== 'granted') {
+            showToast('Compass permission denied — arrow will use GPS movement direction.', 'warning');
+            return;
+          }
+        }
+        window.addEventListener('deviceorientationabsolute', handleDeviceOrientation, true);
+        window.addEventListener('deviceorientation', handleDeviceOrientation, true);
+      } catch (err) {
+        console.warn('Compass sensor not available:', err);
+      }
+    }
+
+    function disableCompassListener() {
+      window.removeEventListener('deviceorientationabsolute', handleDeviceOrientation, true);
+      window.removeEventListener('deviceorientation', handleDeviceOrientation, true);
+      hasCompassSensor = false;
+    }
+
+    function updateHeadingOrientation(newHeadingDeg) {
+      currentHeadingDeg = (newHeadingDeg + 360) % 360;
+      const roundedDeg = Math.round(currentHeadingDeg);
+      const cardinal = getCardinalDirection(roundedDeg);
+
+      const degreeLabel = document.getElementById('headingDegreeLabel');
+      if (degreeLabel) {
+        degreeLabel.textContent = `${cardinal} ${roundedDeg}°`;
+      }
+
+      const mapEl = document.getElementById('map');
+      const northNeedle = document.getElementById('northNeedle');
+      const arrowWrap = document.getElementById('userGpsArrowWrap');
+
+      if (isHeadingUpMode) {
+        if (mapEl) {
+          mapEl.style.transform = `rotate(${-currentHeadingDeg}deg)`;
+        }
+        if (arrowWrap) {
+          arrowWrap.style.transform = `rotate(${currentHeadingDeg}deg)`;
+        }
+        if (northNeedle) {
+          northNeedle.style.transform = `rotate(${-currentHeadingDeg}deg)`;
+        }
+      } else {
+        if (mapEl) {
+          mapEl.style.transform = 'rotate(0deg)';
+        }
+        if (arrowWrap) {
+          arrowWrap.style.transform = `rotate(${currentHeadingDeg}deg)`;
+        }
+        if (northNeedle) {
+          northNeedle.style.transform = 'rotate(0deg)';
+        }
+      }
+    }
+
+    function toggleNavigationMode() {
+      isHeadingUpMode = !isHeadingUpMode;
+      const btn = document.getElementById('navModeBtn');
+      const label = document.getElementById('navModeLabel');
+      const mapEl = document.getElementById('map');
+
+      if (isHeadingUpMode) {
+        if (btn) {
+          btn.className =
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white border border-amber-400/50 text-xs font-semibold transition-all cursor-pointer shadow-md';
+        }
+        if (label) label.textContent = 'Heading-Up';
+        if (mapEl) mapEl.classList.add('heading-up-active');
+
+        enableCompassListener();
+        if (!isGpsTracking) {
+          startGpsTracking(true);
+        } else {
+          isGpsFollowing = true;
+          if (lastUserPosition && map) {
+            map.setView(lastUserPosition, Math.max(map.getZoom(), 16), { animate: true });
+          }
+        }
+        showToast('Heading-Up Mode: Map rotates so your facing direction is always UP.', 'info');
+      } else {
+        resetNorthUp();
+      }
+
+      if (map) {
+        setTimeout(() => map.invalidateSize(), 260);
+      }
+      updateHeadingOrientation(currentHeadingDeg);
+    }
+
+    function resetNorthUp() {
+      isHeadingUpMode = false;
+      const btn = document.getElementById('navModeBtn');
+      const label = document.getElementById('navModeLabel');
+      const mapEl = document.getElementById('map');
+
+      if (btn) {
+        btn.className =
+          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer';
+      }
+      if (label) label.textContent = 'North-Up';
+      if (mapEl) {
+        mapEl.classList.remove('heading-up-active');
+        mapEl.style.transform = 'rotate(0deg)';
+      }
+      if (map) {
+        setTimeout(() => map.invalidateSize(), 260);
+      }
+      updateHeadingOrientation(currentHeadingDeg);
+    }
+
+    async function toggleWakeLock() {
+      const btn = document.getElementById('wakeLockBtn');
+      const label = document.getElementById('wakeLockLabel');
+
+      if (wakeLockSentinel) {
+        try {
+          await wakeLockSentinel.release();
+        } catch (e) {}
+        wakeLockSentinel = null;
+        if (btn) {
+          btn.className =
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer';
+        }
+        if (label) label.textContent = 'Keep Awake';
+        showToast('Screen Wake Lock turned off.', 'info');
+        return;
+      }
+
+      if (!('wakeLock' in navigator)) {
+        showToast('Screen Wake Lock is not supported in this browser.', 'warning');
+        return;
+      }
+
+      try {
+        wakeLockSentinel = await navigator.wakeLock.request('screen');
+        wakeLockSentinel.addEventListener('release', () => {
+          wakeLockSentinel = null;
+          if (btn) {
+            btn.className =
+              'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer';
+          }
+          if (label) label.textContent = 'Keep Awake';
+        });
+
+        if (btn) {
+          btn.className =
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-400/50 text-xs font-semibold transition-all cursor-pointer shadow-md';
+        }
+        if (label) label.textContent = 'Screen On';
+        showToast('Screen will stay awake while you navigate.', 'success');
+      } catch (err) {
+        showToast('Could not enable Keep Awake on this device.', 'warning');
+      }
+    }
+
     function toggleGpsTracking() {
       if (isGpsTracking) {
         stopGpsTracking();
@@ -1122,6 +1390,8 @@
         );
         return;
       }
+
+      enableCompassListener();
 
       isGpsTracking = true;
       isGpsFollowing = true;
@@ -1146,11 +1416,9 @@
         timeout: 20000,
       };
 
-      // Warm up with a fast single position fix first (prevents reload timeouts on mobile Safari/Chrome)
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           onGpsPositionUpdate(pos);
-          // Start continuous tracking once initial fix succeeds
           if (isGpsTracking && gpsWatchId === null) {
             gpsWatchId = navigator.geolocation.watchPosition(
               onGpsPositionUpdate,
@@ -1165,9 +1433,7 @@
     }
 
     function handleGpsError(err, wasHighAccuracy) {
-      // Code 1 = PERMISSION_DENIED, Code 2 = POSITION_UNAVAILABLE, Code 3 = TIMEOUT
       if (err && err.code !== 1 && wasHighAccuracy && isGpsTracking) {
-        // Automatically fall back to standard/Wi-Fi/cell-assisted GPS instead of failing
         const statusText = document.getElementById('gpsStatusText');
         if (statusText) {
           statusText.textContent = 'High-accuracy GPS timed out — switching to standard location...';
@@ -1181,6 +1447,7 @@
     function stopGpsTracking() {
       isGpsTracking = false;
       isGpsFollowing = false;
+      disableCompassListener();
 
       if (gpsWatchId !== null && 'geolocation' in navigator) {
         navigator.geolocation.clearWatch(gpsWatchId);
@@ -1197,6 +1464,7 @@
       }
 
       lastUserPosition = null;
+      prevGpsPosition = null;
       updateGpsUiState();
     }
 
@@ -1233,16 +1501,40 @@
       const lat = position.coords.latitude;
       const lon = position.coords.longitude;
       const accuracy = position.coords.accuracy || 10;
+      const gpsHeading = position.coords.heading;
+      const gpsSpeed = position.coords.speed;
+
+      if (typeof gpsHeading === 'number' && !isNaN(gpsHeading) && gpsSpeed && gpsSpeed > 0.8) {
+        updateHeadingOrientation(gpsHeading);
+      } else if (!hasCompassSensor && prevGpsPosition) {
+        const movedKm = haversineKm(prevGpsPosition[0], prevGpsPosition[1], lat, lon);
+        if (movedKm > 0.003) {
+          const movementBearing = calculateBearingDeg(prevGpsPosition[0], prevGpsPosition[1], lat, lon);
+          updateHeadingOrientation(movementBearing);
+        }
+      }
+
+      prevGpsPosition = [lat, lon];
       lastUserPosition = [lat, lon];
 
       if (!userLocationMarker) {
-        const pulseIcon = L.divIcon({
+        const navArrowIcon = L.divIcon({
           className: '',
-          html: '<div class="user-gps-marker"><div class="user-gps-pulse"></div><div class="user-gps-dot"></div></div>',
-          iconSize: [22, 22],
-          iconAnchor: [11, 11],
+          html: `
+            <div class="user-gps-marker">
+              <div class="user-gps-pulse"></div>
+              <div id="userGpsArrowWrap" class="user-gps-arrow-wrap" style="transform: rotate(${currentHeadingDeg}deg);">
+                <svg width="32" height="32" viewBox="0 0 36 36" fill="none">
+                  <path d="M18 2 L29 22 L18 18 L7 22 Z" fill="rgba(56, 189, 248, 0.25)" />
+                  <path d="M18 4 L27 27 L18 22.5 L9 27 Z" fill="#0ea5e9" stroke="#ffffff" stroke-width="2.5" stroke-linejoin="round" />
+                </svg>
+              </div>
+            </div>
+          `,
+          iconSize: [36, 36],
+          iconAnchor: [18, 18],
         });
-        userLocationMarker = L.marker([lat, lon], { icon: pulseIcon, zIndexOffset: 1000 }).addTo(map);
+        userLocationMarker = L.marker([lat, lon], { icon: navArrowIcon, zIndexOffset: 1000 }).addTo(map);
       } else {
         userLocationMarker.setLatLng([lat, lon]);
       }
@@ -1261,15 +1553,19 @@
       }
 
       if (isGpsFollowing) {
-        const targetZoom = Math.max(map.getZoom(), 15);
-        map.setView([lat, lon], targetZoom, { animate: true });
+        const targetZoom = Math.max(map.getZoom(), 16);
+        map.panTo([lat, lon], { animate: true, duration: 0.4 });
+        if (map.getZoom() < 15) {
+          map.setZoom(targetZoom);
+        }
       }
 
       const statusText = document.getElementById('gpsStatusText');
       const navMetrics = document.getElementById('gpsNavMetrics');
+      const cardinal = getCardinalDirection(currentHeadingDeg);
 
       if (statusText) {
-        statusText.textContent = `LIVE GPS: ${lat.toFixed(5)}, ${lon.toFixed(5)} (±${Math.round(accuracy)}m)`;
+        statusText.textContent = `LIVE GPS: ${lat.toFixed(5)}, ${lon.toFixed(5)} (±${Math.round(accuracy)}m) • Facing ${cardinal} ${Math.round(currentHeadingDeg)}°`;
       }
 
       if (navMetrics) {
